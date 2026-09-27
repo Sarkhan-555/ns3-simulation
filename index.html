@@ -1,27 +1,411 @@
-<!DOCTYPE html>
-<html lang="az">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>NS-3: Şəbəkə Simulyasiyasının Mühərriki</title>
-  <style>
-    body, html {
-      margin: 0;
-      padding: 0;
-      width: 100%;
-      height: 100%;
-      overflow: hidden;
-      background-color: #05050A;
+<!DOCTYPE html><html lang="az" style="color-scheme:dark"><head><script>window.__hfAuthOrigin="https://auth.higgsfield.app";// Notifications only: browser permissions and iframe policies enforce access.
+(function () {
+  try {
+    if (window.__hfAccessPatched || window.parent === window) return;
+    window.__hfAccessPatched = true;
+    var viewerOrigin = null;
+    var pending = [];
+    var reported = {};
+    function flush() {
+      if (!viewerOrigin || !pending.length) return;
+      window.parent.postMessage({
+        source: "hf-app-permissions",
+        type: "permission-request",
+        capabilities: pending.slice()
+      }, viewerOrigin);
+      pending = [];
     }
-    iframe {
-      width: 100%;
-      height: 100%;
-      border: none;
+    function report(capabilities) {
+      capabilities.forEach(function (capability) {
+        if (!reported[capability]) {
+          reported[capability] = true;
+          pending.push(capability);
+        }
+      });
+      flush();
     }
-  </style>
-</head>
-<body>
-  <!-- Aşağıdakı dırnaq işarəsinin içinə Higgsfield-in sənə verdiyi linki yapışdır -->
-  <iframe src="https://ns3-network-engine.higgsfield.app/" allowfullscreen></iframe>
-</body>
-</html>
+    window.addEventListener("message", function (event) {
+      if (event.source !== window.parent || !/^https?:\/\//.test(event.origin)) return;
+      if (!event.data || event.data.source !== "hf-app-permissions" || event.data.type !== "init") return;
+      viewerOrigin = event.origin;
+      try { flush(); } catch (error) { /* Delivery is best-effort. */ }
+    });
+    function wrap(owner, method, capabilities) {
+      // One unavailable or read-only API must not prevent other wrappers installing.
+      try {
+        if (!owner || typeof owner[method] !== "function") return;
+        var original = owner[method];
+        owner[method] = function () {
+          try {
+            report(typeof capabilities === "function" ? capabilities(arguments) : capabilities);
+          } catch (error) { /* Preserve native results even if reporting fails. */ }
+          return original.apply(this, arguments);
+        };
+      } catch (error) { /* Some browsers expose non-writable methods. */ }
+    }
+    function mediaCapabilities(args) {
+      var constraints = args[0];
+      var capabilities = [];
+      if (constraints && constraints.video) capabilities.push("camera");
+      if (constraints && constraints.audio) capabilities.push("microphone");
+      return capabilities;
+    }
+    wrap(navigator.mediaDevices, "getUserMedia", mediaCapabilities);
+    ["getUserMedia", "webkitGetUserMedia", "mozGetUserMedia"].forEach(function (method) {
+      wrap(navigator, method, mediaCapabilities);
+    });
+    wrap(navigator.mediaDevices, "getDisplayMedia", ["screen"]);
+    wrap(navigator.mediaDevices, "enumerateDevices", ["media-devices"]);
+    wrap(navigator.mediaDevices, "selectAudioOutput", ["speakers"]);
+    ["getCurrentPosition", "watchPosition"].forEach(function (method) {
+      wrap(navigator.geolocation, method, ["location"]);
+    });
+    ["read", "readText"].forEach(function (method) {
+      wrap(navigator.clipboard, method, ["clipboard-read"]);
+    });
+    ["write", "writeText"].forEach(function (method) {
+      wrap(navigator.clipboard, method, ["clipboard-write"]);
+    });
+    wrap(window.Notification, "requestPermission", ["notifications"]);
+    wrap(window.PushManager && window.PushManager.prototype, "subscribe", ["notifications"]);
+    wrap(navigator.bluetooth, "requestDevice", ["bluetooth"]);
+    wrap(navigator.usb, "requestDevice", ["usb"]);
+    wrap(navigator.serial, "requestPort", ["serial"]);
+    wrap(navigator.hid, "requestDevice", ["hid"]);
+    wrap(navigator, "requestMIDIAccess", ["midi"]);
+    ["showOpenFilePicker", "showSaveFilePicker", "showDirectoryPicker"].forEach(function (method) {
+      wrap(window, method, ["files"]);
+    });
+    wrap(window.FileSystemHandle && window.FileSystemHandle.prototype, "requestPermission", ["files"]);
+    wrap(window.Element && window.Element.prototype, "requestFullscreen", ["fullscreen"]);
+    wrap(window.Element && window.Element.prototype, "requestPointerLock", ["pointer-lock"]);
+    wrap(navigator.wakeLock, "request", ["wake-lock"]);
+    wrap(navigator.storage, "persist", ["persistent-storage"]);
+    wrap(navigator.xr, "requestSession", ["xr"]);
+    wrap(window.DeviceMotionEvent, "requestPermission", ["motion"]);
+    wrap(window.DeviceOrientationEvent, "requestPermission", ["motion"]);
+    wrap(window.Sensor && window.Sensor.prototype, "start", ["sensors"]);
+    wrap(window.Document && window.Document.prototype, "requestStorageAccess", ["storage-access"]);
+    wrap(window.Document && window.Document.prototype, "requestStorageAccessFor", ["storage-access"]);
+  } catch (error) {
+    // Instrumentation must not prevent the rest of the SDK loading.
+  }
+})();
+
+/**
+ * Approval client SDK — the browser half of the approval flow (paired with
+ * approve.html), injected into every app page. A real file, imported as text and
+ * bundled at deploy (see injected-sdk.ts + the router wrangler). Runs in the
+ * untrusted app page: plain ES5, idempotent (window.__hfPatched), fully
+ * try/catch-wrapped, installed inline+synchronous at <head> so it's present
+ * before any app code runs.
+ *
+ * There is exactly ONE approval trigger: window.hf.requestGeneration(model,
+ * params, opts). The app calls it on the user's Generate action; the modal is
+ * visible exactly while the returned promise is pending. Approve resolves the
+ * minted single-use intent id, which the app threads to its server function and
+ * the fnf SDK adapter sends as the submit body's confirmation_token; cancel
+ * rejects with a DOMException named AbortError (a user choice, not a failure).
+ * Enforcement is entirely server-side: the outbound spend gate 403s any
+ * POST /jobs/submit that doesn't carry a matching minted approval (see
+ * outbound-worker/src/spend-gate.ts), so an app that skips the call gets a
+ * self-describing failed submit, never a silent spend. This SDK never inspects
+ * request bodies and never opens a modal on its own.
+ */
+(function () {
+  try {
+    if (window.__hfPatched) return;
+    window.__hfPatched = true;
+    var of = window.fetch;
+    if (typeof of !== "function") return;
+    // Approval surface origin (auth.<zone>, serving the consent page at
+    // /approve). Preferred source: the origin the router stamps ahead of this
+    // script (injected-sdk.ts) — apps can be served on CUSTOM DOMAINS, where
+    // deriving from the page host would fabricate a non-existent
+    // auth.<customdomain>. Host derivation stays as the fallback for stale
+    // cached HTML that predates the stamp.
+    var APPROVE =
+      typeof window.__hfAuthOrigin === "string" && window.__hfAuthOrigin.indexOf("https://") === 0
+        ? window.__hfAuthOrigin
+        : "https://auth." + location.host.split(".").slice(1).join(".");
+    window.__hfFetches = window.__hfFetches || [];
+
+    // Single-flight: at most ONE approval modal at a time. A fast double-click (or
+    // an app firing two requests) would otherwise open a second scrim+iframe stacked
+    // on the first — so a second approve() while one is open returns the in-flight
+    // promise instead of opening another modal.
+    var openModal = null;
+
+    // The modal is a cross-origin iframe of auth.<zone>/approve: the app cannot
+    // read or script it, and WHO may frame the page is pinned server-side by its
+    // frame-ancestors. The page itself obtains the authoritative price from fnf
+    // before enabling Generate; app-supplied display prices are intentionally
+    // ignored. The app DOM can still restyle, shrink or overlay this iframe, and
+    // job binding does NOT cover that (a hidden but genuine click on the app's
+    // own job is still a click): the page defends itself — Generate arms only
+    // after a delay and only while the browser vouches that the card is visible
+    // and unoccluded (IntersectionObserver v2); otherwise the commit moves to a
+    // top-level popup the app cannot overlay. See approve-ui/src/redress.ts.
+    function approve(job) {
+      if (openModal) return openModal;
+      openModal = new Promise(function (resolve, reject) {
+        var grant = null;
+        var ready = false;
+        var done = false;
+        var openedAt = Date.now();
+
+        // Three parent layers so the iframe body can stay fully TRANSPARENT and
+        // still show no white edge:
+        //  - scrim: full-screen div carrying the blur (backdrop-filter samples the
+        //    real app behind it) + a dark tint.
+        //  - wrap: a rounded, overflow:hidden div that CLIPS the iframe. The iframe
+        //    overlaps the backdrop-filter scrim, so Chromium backs its layer
+        //    opaquely; the iframe's OWN border-radius doesn't reliably clip that
+        //    layer (leaving white corners), but a parent clip does. So the corners
+        //    outside the radius are clipped away → the blurred scrim shows through,
+        //    no white ring.
+        //  - frame: the iframe, fully transparent, filling wrap. Its page paints
+        //    only the card (edge-to-edge, no radius — wrap provides the rounding).
+        var scrim = document.createElement("div");
+        scrim.style.cssText =
+          "position:fixed;inset:0;z-index:2147483646;background:rgba(0,0,0,0.28);" +
+          "-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px)";
+        var wrap = document.createElement("div");
+        // opacity:0 until the page reports its height so the modal fades in at its
+        // final size (no empty-frame flash, no height re-center / layout shift).
+        // Round with clip-path (not just border-radius + overflow): clip-path is
+        // applied in the COMPOSITOR, so it clips the cross-origin iframe's own
+        // layer edge cleanly. border-radius/overflow only clip the shape and leave
+        // the iframe's opaque WHITE base fringing at the rounded corners (the white
+        // peek). background = card color as a second line of defense. Both the wrap
+        // and the iframe carry the clip; keep 24px in sync with the card radius.
+        wrap.style.cssText =
+          "position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);" +
+          "width:min(400px,calc(100vw - 32px));height:188px;border-radius:24px;overflow:hidden;" +
+          "-webkit-clip-path:inset(0 round 24px);clip-path:inset(0 round 24px);" +
+          "background:#23262a;opacity:0;transition:opacity 0.12s ease;z-index:2147483647";
+        var frame = document.createElement("iframe");
+        // referrerPolicy="origin": the page's frame-ancestors admits a registered
+        // CUSTOM DOMAIN only when this origin arrives as the Referer (approve.ts).
+        frame.referrerPolicy = "origin";
+        frame.src = APPROVE + "/approve";
+        frame.allowTransparency = "true";
+        frame.style.cssText =
+          "display:block;width:100%;height:100%;border:0;border-radius:24px;" +
+          "-webkit-clip-path:inset(0 round 24px);clip-path:inset(0 round 24px);background:#23262a";
+        wrap.appendChild(frame);
+        var revealTimer = null;
+
+        function cleanup() {
+          if (done) return;
+          done = true;
+          clearTimeout(revealTimer);
+          window.removeEventListener("message", onMessage);
+          document.removeEventListener("keydown", onKey, true);
+          wrap.remove();
+          scrim.remove();
+        }
+
+        function beacon(outcome) {
+          if (!grant) return;
+          try {
+            var payload = JSON.stringify({
+              grant: grant,
+              outcome: outcome,
+              ms_open: Date.now() - openedAt,
+            });
+            var url = APPROVE + "/approve/outcome";
+            if (navigator.sendBeacon) {
+              navigator.sendBeacon(url, new Blob([payload], { type: "text/plain" }));
+            } else {
+              of(url, { method: "POST", body: payload, mode: "no-cors", keepalive: true }).catch(
+                function () {},
+              );
+            }
+          } catch (e) {}
+        }
+
+        // Dismiss = the same "denied" path as the modal's Cancel button, so the
+        // caller turns it into an AbortError (a cancel, not a failure).
+        function dismiss() {
+          if (done) return;
+          cleanup();
+          beacon("denied");
+          var error = new Error("hf: denied");
+          error.hfReason = "denied";
+          reject(error);
+        }
+
+        function onKey(event) {
+          if (event.key === "Escape" || event.keyCode === 27) dismiss();
+        }
+
+        function sendRequest() {
+          if (!ready || !grant || done) return;
+          frame.contentWindow.postMessage(
+            { source: "hf-approve", type: "request", grant: grant, job: job },
+            APPROVE,
+          );
+        }
+
+        function onMessage(event) {
+          if (event.origin !== APPROVE || event.source !== frame.contentWindow) return;
+          var data = event.data || {};
+          if (data.source !== "hf-approve") return;
+          // Size the clip wrapper to the page's reported card height, and reveal
+          // ONLY once sized — modal fades in at its final height (no shift/flash).
+          if (typeof data.h === "number" && data.h > 0) {
+            wrap.style.height = data.h + "px";
+            clearTimeout(revealTimer);
+            wrap.style.opacity = "1";
+          }
+          if (data.type === "ready") {
+            ready = true;
+            sendRequest();
+            return;
+          }
+          if (data.type === "pending") {
+            // The decision moved to a top-level consent window (the iframe
+            // relays its verdict and reports a closed popup as "denied"). Keep
+            // the iframe alive for it: tearing it down on the 120 s deadline
+            // orphans the popup — Cancel/Generate there could reach nobody.
+            clearTimeout(deadline);
+            deadline = setTimeout(onDeadline, 600000);
+            return;
+          }
+          if (data.type !== "result") return;
+          cleanup();
+          if (data.ok && typeof data.intentId === "string") {
+            resolve(data.intentId);
+            return;
+          }
+          beacon("denied");
+          var error = new Error("hf: " + (data.reason || "denied"));
+          error.hfReason = data.reason || "denied";
+          reject(error);
+        }
+
+        window.addEventListener("message", onMessage);
+        // Close on background (scrim) click and on Escape. The scrim sits behind
+        // the card (wrap), so a click on it is a click OUTSIDE the modal. Escape
+        // is captured on the parent; the page also handles Escape when focus is
+        // inside the iframe (see approve-ui).
+        scrim.addEventListener("click", dismiss);
+        document.addEventListener("keydown", onKey, true);
+        document.documentElement.appendChild(scrim);
+        document.documentElement.appendChild(wrap);
+        // Fallback: reveal at the default height if the page never reports its
+        // size, so the modal is never stuck hidden.
+        revealTimer = setTimeout(function () {
+          wrap.style.opacity = "1";
+        }, 500);
+
+        of("/__auth/approval-grant", { method: "POST" })
+          .then(function (r) {
+            return r
+              .json()
+              .catch(function () {
+                return {};
+              })
+              .then(function (b) {
+                return { s: r.status, b: b };
+              });
+          })
+          .then(function (x) {
+            if (!x.b || !x.b.grant) {
+              cleanup();
+              reject(
+                new Error(
+                  x.s === 401 ? "hf: not signed in" : "hf: approval unavailable (" + x.s + ")",
+                ),
+              );
+              return;
+            }
+            grant = x.b.grant;
+            sendRequest();
+          })
+          .catch(function (error) {
+            cleanup();
+            reject(error);
+          });
+
+        function onDeadline() {
+          if (done) return;
+          cleanup();
+          beacon("timeout");
+          reject(new Error("hf: approval timeout"));
+        }
+        var deadline = setTimeout(onDeadline, 120000);
+      });
+      // Release the single-flight lock once this approval settles, so the next
+      // genuine generation can open a fresh modal.
+      var release = function () {
+        openModal = null;
+      };
+      openModal.then(release, release);
+      return openModal;
+    }
+
+    // Observability-only fetch patch: request log for debugging (__hfFetches +
+    // console). No interception, no body inspection, no classification — the
+    // approval flow is driven solely by window.hf.requestGeneration.
+    window.fetch = function (input, init) {
+      try {
+        var url = typeof input === "string" ? input : (input && input.url) || String(input);
+        var method = (init && init.method) || (input && input.method) || "GET";
+        window.__hfFetches.push({ url: url, method: method, ts: Date.now() });
+        console.log("[hf-fetch]", method, url);
+      } catch (e) {}
+      return of.apply(this, arguments);
+    };
+
+    // Public SDK. The app contract (see the builder instructions and
+    // docs/generation-approval): call this on the Generate action with the SDK
+    // WIRE shape of the exact submission (wire.jobSetType + wire.params — the
+    // approval is bound server-side to the hash of {job_set_type, params} of the
+    // actual submit body), thread the resolved intent id to the server as the
+    // confirmation token, and render a cancel quietly. opts.credits is an
+    // optional display-only estimate shown in the modal. The id is a token:
+    // never logged here, and apps must not log it either.
+    window.hf = {
+      requestGeneration: function (model, params, opts) {
+        // Fail fast on a bad job identity, BEFORE any UI. The approve page
+        // (protocol.ts) silently ignores a request whose job_set_type isn't a
+        // non-empty string or whose params don't survive structured clone —
+        // which would leave the modal stuck on "Waiting for the app…" with no
+        // way to reply. A typed rejection shows the app its own bug instead.
+        if (typeof model !== "string" || !model) {
+          return Promise.reject(
+            new TypeError("hf: requestGeneration(model, params) — model must be a non-empty string"),
+          );
+        }
+        if (typeof structuredClone === "function") {
+          try {
+            structuredClone(params);
+          } catch (e) {
+            return Promise.reject(
+              new TypeError("hf: requestGeneration params must be structured-cloneable (plain JSON)"),
+            );
+          }
+        }
+        return approve({ job_set_type: model, params: params }).then(
+          function (id) {
+            console.log("[hf] approved");
+            return id;
+          },
+          // Cancel → AbortError, per the app contract ("render a quiet cancelled
+          // state"). Other failures (not signed in, unavailable, timeout) bubble
+          // as-is — those ARE failures.
+          function (e) {
+            if (e && e.hfReason === "denied") {
+              console.log("[hf] cancelled");
+              throw new DOMException("Generation cancelled", "AbortError");
+            }
+            throw e;
+          },
+        );
+      },
+    };
+  } catch (e) {}
+})();
+</script><meta charSet="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><link rel="stylesheet" href="/assets/styles-CQCyr_NE.css" data-precedence="default"/><title>NS-3: Şəbəkə Simulyasiyasının Mühərriki</title><meta name="description" content="NS-3 şəbəkə simulyatoru haqqında üçölçülü, interaktiv akademik təqdimat."/><meta property="og:title" content="NS-3: Şəbəkə Simulyasiyasının Mühərriki"/><meta property="og:description" content="NS-3 şəbəkə simulyatoru haqqında üçölçülü, interaktiv akademik təqdimat."/><meta property="og:type" content="website"/><meta name="twitter:card" content="summary"/><link rel="modulepreload" href="/assets/index-DcWe6Y-3.js"/><link rel="modulepreload" href="/assets/index-B5lbM2L2.js"/></head><body class="app-body"><!--$--><div class="shell" data-stage=""><div class="stage" aria-hidden="true"><div class="stage__fallback"></div></div><header class="topbar"><button type="button" class="brand" aria-label="Başlanğıca qayıt"><svg class="brand__mark" viewBox="0 0 32 32" width="26" height="26" aria-hidden="true" focusable="false"><polygon points="16,3 26,9.5 26,22.5 16,29 6,22.5 6,9.5" fill="none" stroke="currentColor" stroke-width="1.2" opacity="0.55"></polygon><line x1="16" y1="3" x2="16" y2="29" stroke="currentColor" stroke-width="0.8" opacity="0.3"></line><line x1="6" y1="9.5" x2="26" y2="22.5" stroke="currentColor" stroke-width="0.8" opacity="0.3"></line><line x1="26" y1="9.5" x2="6" y2="22.5" stroke="currentColor" stroke-width="0.8" opacity="0.3"></line><circle cx="16" cy="3" r="2" fill="currentColor"></circle><circle cx="26" cy="22.5" r="2" fill="currentColor"></circle><circle cx="6" cy="22.5" r="2" fill="currentColor"></circle></svg><span class="brand__text">NS-3</span></button><nav class="topbar__nav" aria-label="Əsas naviqasiya"><button type="button" class="navlink" data-active="true"><span class="navlink__text">Mühərrik</span></button><button type="button" class="navlink" data-active="false"><span class="navlink__text">Node</span></button><button type="button" class="navlink" data-active="false"><span class="navlink__text">Trafik</span></button><button type="button" class="navlink" data-active="false"><span class="navlink__text">Kod</span></button><button type="button" class="navlink" data-active="false"><span class="navlink__text">Sahələr</span></button><button type="button" class="navlink" data-active="false"><span class="navlink__text">Yekun</span></button></nav><span class="topbar__meta">Şəbəkə simulyasiyası</span></header><aside class="rail" aria-hidden="true"><span class="rail__track"><span class="rail__fill"></span></span><ul class="rail__list"><li><button type="button" class="tick" tabindex="-1" data-active="false"><span class="tick__dot"></span><span class="tick__label">Node</span></button></li><li><button type="button" class="tick" tabindex="-1" data-active="false"><span class="tick__dot"></span><span class="tick__label">Trafik</span></button></li><li><button type="button" class="tick" tabindex="-1" data-active="false"><span class="tick__dot"></span><span class="tick__label">Kod</span></button></li><li><button type="button" class="tick" tabindex="-1" data-active="false"><span class="tick__dot"></span><span class="tick__label">Kiber</span></button></li><li><button type="button" class="tick" tabindex="-1" data-active="false"><span class="tick__dot"></span><span class="tick__label">5G</span></button></li><li><button type="button" class="tick" tabindex="-1" data-active="false"><span class="tick__dot"></span><span class="tick__label">V2X</span></button></li><li><button type="button" class="tick" tabindex="-1" data-active="false"><span class="tick__dot"></span><span class="tick__label">Peyk</span></button></li><li><button type="button" class="tick" tabindex="-1" data-active="false"><span class="tick__dot"></span><span class="tick__label">IoT</span></button></li><li><button type="button" class="tick" tabindex="-1" data-active="false"><span class="tick__dot"></span><span class="tick__label">Sualtı</span></button></li></ul></aside><div class="callouts" aria-hidden="true"><div class="callout" data-callout="node" style="opacity:0"><span class="callout__tag">Node</span><span class="callout__line">Host, router, server</span><span class="callout__line callout__line--dim">Protokol yığını və interfeyslər</span></div><div class="callout" data-callout="netdevice" style="opacity:0"><span class="callout__tag">NetDevice</span><span class="callout__line">Kanal interfeysi</span><span class="callout__line callout__line--dim">Göndərmə, qəbul, növbə</span></div><div class="callout" data-callout="channel" style="opacity:0"><span class="callout__tag">Channel</span><span class="callout__line callout__line--dim">Point-to-Point · 5 Mbps · 2 ms</span></div></div><main class="story"><section id="top" class="chapter chapter--hero" data-chapter="0"><div class="chapter__inner"><div class="hero"><span class="eyebrow">Akademik təqdimat</span><h1 class="kinetic"><span class="kt__word"><span class="kt__w">NS-3:</span></span><span class="kt__word"><span class="kt__w">Şəbəkə</span></span><span class="kt__word"><span class="kt__w">Simulyasiyasının</span></span><span class="kt__word"><span class="kt__w">Mühərriki</span></span></h1><p class="hero__lead">Real şəbəkə qurmadan protokolları, trafiki və topologiyanı modelləşdirin.</p><div class="hero__actions"><button type="button" class="cta-flight"><span class="cta-flight__label">Simulyasiyaya keç</span><span class="cta-flight__track" aria-hidden="true"><span class="cta-flight__spark"></span></span><span class="cta-flight__chev" aria-hidden="true"></span></button></div></div></div></section><section id="node" class="chapter chapter--edge-left" data-chapter="1"><div class="chapter__inner"><div class="chapter__copy" data-align="left"><span class="chapter__index" aria-hidden="true">01</span><h2 class="chapter__title">Node və NetDevice</h2><p class="chapter__body">Node şəbəkədəki cihazı təmsil edir: host, router, server. NetDevice onu fiziki kanala bağlayır və paketlərin göndərilməsini idarə edir.</p><ul class="calls"><li class="calls__item"><span class="calls__tag">Node</span><span class="calls__value">Protokol yığını, interfeyslər, yaddaş</span></li><li class="calls__item"><span class="calls__tag">NetDevice</span><span class="calls__value">Göndərmə, qəbul, növbə idarəsi</span></li><li class="calls__item"><span class="calls__tag">Channel</span><span class="calls__value">İki cihaz arasında ötürmə mühiti</span></li></ul></div></div></section><section id="traffic" class="chapter chapter--edge-right" data-chapter="2"><div class="chapter__inner"><div class="chapter__copy" data-align="right"><span class="chapter__index" aria-hidden="true">02</span><h2 class="chapter__title">Point-to-Point trafik</h2><p class="chapter__body">İki node arasında Point-to-Point kanal qurulur. Paketlər kanal boyunca hərəkət edir, NS-3 isə gecikmə, itki və ötürmə qabiliyyətini ölçür.</p><dl class="metrics"><div class="metrics__item"><dt class="metrics__label">DataRate</dt><dd class="metrics__value">5 Mbps</dd></div><div class="metrics__item"><dt class="metrics__label">Delay</dt><dd class="metrics__value">2 ms</dd></div><div class="metrics__item"><dt class="metrics__label">Paket</dt><dd class="metrics__value">1024 B</dd></div><div class="metrics__item"><dt class="metrics__label">Nəqliyyat</dt><dd class="metrics__value">TCP / UDP</dd></div></dl></div></div></section><section id="code" class="chapter chapter--split" data-chapter="3"><div class="chapter__inner"><div class="chapter__copy" data-align="left"><span class="chapter__index" aria-hidden="true">03</span><h2 class="chapter__title">Model koddan başlayır</h2><p class="chapter__body">Ssenari C++ ilə yazılır. Node-lar, kanallar və tətbiqlər elə qurulur ki, nəticə real şəbəkə davranışını versin. Simulyasiyadan sonra hər paket izlənə bilər.</p></div><div class="deck"><div class="panel panel--terminal"><div class="panel__bar"><span class="panel__path">ns-3-dev / scratch / p2p-echo.cc</span><span class="panel__state">yazılır</span></div><div class="panel__body"><pre class="code"><span class="code__line"><span class="code__num">1</span><span class="code__src"><span class="code__caret" aria-hidden="true"></span></span></span></pre><div class="log"><span class="code__caret" aria-hidden="true"></span></div></div><span class="sr-only">NS-3 ssenarisi: iki node, Point-to-Point kanal və UDP echo tətbiqi.<!-- --> </span></div><div class="panel panel--capture"><div class="panel__bar"><span class="panel__path">p2p-0-0.pcap · canlı tutma</span><span class="panel__state">12<!-- --> paket</span></div><div class="capture__filter"><span class="capture__filter-label">Filter</span><span class="capture__filter-value">udp.port == 9</span><span class="capture__filter-hits">1<!-- --> uyğun</span></div><div class="capture__meter" aria-hidden="true"><span class="capture__bar" style="height:74%"></span><span class="capture__bar" style="height:60.067180723266475%"></span><span class="capture__bar" style="height:69.28018400153589%"></span><span class="capture__bar" style="height:71.92162571134797%"></span><span class="capture__bar" style="height:67.21241009548974%"></span><span class="capture__bar" style="height:56.5415248013083%"></span><span class="capture__bar" style="height:43.05635764641879%"></span><span class="capture__bar" style="height:57.734371573370815%"></span><span class="capture__bar" style="height:23.2099481527621%"></span><span class="capture__bar" style="height:22.70242326495448%"></span><span class="capture__bar" style="height:29.361491860740202%"></span><span class="capture__bar" style="height:41.22305529251521%"></span><span class="capture__bar" style="height:54.78853408783446%"></span><span class="capture__bar" style="height:66.05677730903527%"></span><span class="capture__bar" style="height:98.704205846925%"></span><span class="capture__bar" style="height:70.06510525598351%"></span><span class="capture__bar" style="height:61.62292982229404%"></span><span class="capture__bar" style="height:48.867707259738324%"></span><span class="capture__bar" style="height:35.561602655616966%"></span><span class="capture__bar" style="height:25.629264281967906%"></span><span class="capture__bar" style="height:22.00024483623241%"></span><span class="capture__bar" style="height:52.74492707284084%"></span><span class="capture__bar" style="height:35.758813386635005%"></span><span class="capture__bar" style="height:49.0882984372777%"></span><span class="capture__bar" style="height:61.80183786768061%"></span><span class="capture__bar" style="height:70.1495610702157%"></span></div><div class="capture__table"><div class="capture__row capture__row--head"><span>No.</span><span>Time</span><span>Source</span><span>Destination</span><span>Protocol</span><span>Length</span><span>Info</span></div><div class="capture__scroll"><div class="capture__row is-selected"><span class="mono">1</span><span class="mono">1.000412</span><span class="mono">10.1.1.2</span><span class="mono">10.1.1.1</span><span class="mono proto--udp">UDP</span><span class="mono">1066</span><span class="capture__info">Source port: 49153  Destination port: 9</span></div></div></div><div class="capture__detail"><span class="capture__detail-title">Frame <!-- -->1<!-- --> · IPv4 · UDP başlığı · yük (payload)</span><pre class="hex"><span class="hex__line">0000  45 00 04 2a 00 01 00 00  40 11 7a 3c 0a 01 01 02   E..*....@.z&lt;....</span><span class="hex__line">0010  0a 01 01 01 c0 01 00 09  04 16 8e 1f 41 42 43 44   ............ABCD</span><span class="hex__line">0020  45 46 47 48 49 4a 4b 4c  4d 4e 4f 50 51 52 53 54   EFGHIJKLMNOPQRST</span><span class="hex__line">0030  55 56 57 58 59 5a 30 31  32 33 34 35 36 37 38 39   UVWXYZ0123456789</span></pre></div><span class="sr-only">Şəbəkə trafikinin paket səviyyəsində təhlili: mənbə, təyinat, protokol və ölçü sütunları canlı yenilənir.</span></div></div></div></section><section id="security" class="chapter chapter--edge-left" data-chapter="4"><div class="chapter__inner"><div class="chapter__copy" data-align="left"><span class="chapter__index" aria-hidden="true">04</span><h2 class="chapter__title">Kibertəhlükəsizlik</h2><p class="chapter__body">DDoS, port skanı və zəiflik axtarışı ssenariləri canlı şəbəkəyə ziyan vurmadan sınaqdan keçirilir. Hücum trafiki qırmızı, müdafiə cavabı mavi göstərilir.</p><dl class="metrics"><div class="metrics__item"><dt class="metrics__label">Hücum axını</dt><dd class="metrics__value">1.2 Gbps</dd></div><div class="metrics__item"><dt class="metrics__label">Bloklanan</dt><dd class="metrics__value">98.4 %</dd></div><div class="metrics__item"><dt class="metrics__label">Aşkarlama</dt><dd class="metrics__value">&lt; 40 ms</dd></div></dl></div></div></section><section id="cellular" class="chapter chapter--band" data-chapter="5"><div class="chapter__inner"><div class="chapter__copy" data-align="left"><span class="chapter__index" aria-hidden="true">05</span><h2 class="chapter__title">5G və 6G</h2><p class="chapter__body">Baz stansiyaları, radio kanal modelləri və handover: mobil istifadəçi bir stansiyadan digərinə keçərkən paket itkisi və gecikmə ölçülür.</p><dl class="metrics"><div class="metrics__item"><dt class="metrics__label">Baz stansiyası</dt><dd class="metrics__value">4</dd></div><div class="metrics__item"><dt class="metrics__label">Handover</dt><dd class="metrics__value">3.1 s</dd></div><div class="metrics__item"><dt class="metrics__label">Gecikmə</dt><dd class="metrics__value">12 ms</dd></div></dl></div></div></section><section id="v2x" class="chapter chapter--edge-right" data-chapter="6"><div class="chapter__inner"><div class="chapter__copy" data-align="right"><span class="chapter__index" aria-hidden="true">06</span><h2 class="chapter__title">V2X və ağıllı nəqliyyat</h2><p class="chapter__body">Nəqliyyat vasitələri bir-biri ilə və infrastrukturla danışır: maneə xəbərdarlığı, sürət uyğunlaşdırması və sıxlıq idarəsi modelləşdirilir.</p><dl class="metrics"><div class="metrics__item"><dt class="metrics__label">V2V mesajı</dt><dd class="metrics__value">10 Hz</dd></div><div class="metrics__item"><dt class="metrics__label">Radius</dt><dd class="metrics__value">300 m</dd></div><div class="metrics__item"><dt class="metrics__label">Etibarlılıq</dt><dd class="metrics__value">99.1 %</dd></div></dl></div></div></section><section id="satellite" class="chapter chapter--edge-left" data-chapter="7"><div class="chapter__inner"><div class="chapter__copy" data-align="left"><span class="chapter__index" aria-hidden="true">07</span><h2 class="chapter__title">Peyk şəbəkələri</h2><p class="chapter__body">LEO orbitləri, yer stansiyaları və uzun gecikmə. Peyk rabitəsi üçün real kanal modelləri qurulur və məlumat yolu görünən hala gəlir.</p><dl class="metrics"><div class="metrics__item"><dt class="metrics__label">Orbit hündürlüyü</dt><dd class="metrics__value">550 km</dd></div><div class="metrics__item"><dt class="metrics__label">RTT</dt><dd class="metrics__value">42 ms</dd></div><div class="metrics__item"><dt class="metrics__label">Peyk sayı</dt><dd class="metrics__value">3</dd></div></dl></div></div></section><section id="iot" class="chapter chapter--band" data-chapter="8"><div class="chapter__inner"><div class="chapter__copy" data-align="left"><span class="chapter__index" aria-hidden="true">08</span><h2 class="chapter__title">IoT və ağıllı şəhər</h2><p class="chapter__body">Minlərlə sensor məlumat göndərir. NS-3 bu trafikin sıxlığını, mərkəzi qovşaqdakı yükü və enerji sərfiyyatını ölçür.</p><dl class="metrics"><div class="metrics__item"><dt class="metrics__label">Sensor</dt><dd class="metrics__value">2 048</dd></div><div class="metrics__item"><dt class="metrics__label">Paket/dəq</dt><dd class="metrics__value">18 400</dd></div><div class="metrics__item"><dt class="metrics__label">Ötürmə</dt><dd class="metrics__value">128 kbps</dd></div></dl></div></div></section><section id="underwater" class="chapter chapter--edge-right" data-chapter="9"><div class="chapter__inner"><div class="chapter__copy" data-align="right"><span class="chapter__index" aria-hidden="true">09</span><h2 class="chapter__title">Sualtı şəbəkələr</h2><p class="chapter__body">Akustik kanal yüksək gecikmə və aşağı ötürmə qabiliyyəti ilə modelləşdirilir. Sualtı dronlar məlumatı çoxhoplu şəkildə ötürür.</p><dl class="metrics"><div class="metrics__item"><dt class="metrics__label">Akustik gecikmə</dt><dd class="metrics__value">1.4 s</dd></div><div class="metrics__item"><dt class="metrics__label">Tezlik</dt><dd class="metrics__value">24 kHz</dd></div><div class="metrics__item"><dt class="metrics__label">Hop</dt><dd class="metrics__value">3</dd></div></dl></div></div></section><section id="finale" class="chapter chapter--finale" data-chapter="10"><div class="chapter__inner"><div class="finale"><span class="eyebrow">Yekun</span><h2 class="finale__title">NS-3 ekosistemi</h2><p class="finale__body">Açıq mənbəli, genişlənə bilən və akademik tədqiqat üçün standart alət. Altı ssenari eyni mühərrikin üzərində işləyir.</p><ul class="docs"><li class="docs__item" data-order="0"><a class="docs__link" href="https://www.nsnam.org/" target="_blank" rel="noreferrer"><span class="docs__label">Rəsmi sayt</span><span class="docs__value">nsnam.org</span><span class="docs__note">Layihə, buraxılışlar, icma</span><span class="docs__arrow" aria-hidden="true"></span></a></li><li class="docs__item" data-order="1"><a class="docs__link" href="https://www.nsnam.org/documentation/" target="_blank" rel="noreferrer"><span class="docs__label">Sənədlər</span><span class="docs__value">ns-3 documentation</span><span class="docs__note">Dərslik, model kitabxanası, API</span><span class="docs__arrow" aria-hidden="true"></span></a></li><li class="docs__item" data-order="2"><a class="docs__link" href="https://gitlab.com/nsnam/ns-3-dev" target="_blank" rel="noreferrer"><span class="docs__label">Mənbə kodu</span><span class="docs__value">gitlab.com/nsnam</span><span class="docs__note">Açıq mənbə, töhfə vermə qaydaları</span><span class="docs__arrow" aria-hidden="true"></span></a></li></ul><details class="qa"><summary class="qa__summary"><span class="qa__title">Suallar?</span><span class="qa__mark" aria-hidden="true"></span></summary><p class="qa__body">Təqdimatdan sonra müzakirə üçün: model seçimi, ölçmə metodikası və nəticələrin təkrarlanması.</p></details><p class="colophon">NS-3 · açıq mənbə şəbəkə simulyatoru · təqdimat üçün hazırlanmışdır</p></div></div></section></main></div><script>(function(a,f){let l;try{l=JSON.parse(sessionStorage.getItem(a)||"{}")}catch{return}const n=l?.[f||history.state?.__TSR_key];let c=!1;for(const t in n){const e=n[t],o=e?.scrollX,s=e?.scrollY;if(Number.isFinite(o)&&Number.isFinite(s)){if(t==="window")scrollTo(o,s),c=!0;else if(t)try{const r=document.querySelector(t);r&&(r.scrollLeft=o,r.scrollTop=s)}catch{}}}if(c)return;const i=location.hash.slice(1);if(i){const t=history.state?.__hashScrollIntoViewOptions??!0;if(t){const e=document.getElementById(i);e&&e.scrollIntoView(t)}return}scrollTo(0,0)})("tsr-scroll-restoration-v1_3");document.currentScript.remove()</script><!--/$--><script class="$tsr" id="$tsr-stream-barrier">(self.$R=self.$R||{})["tsr"]=[];self.$_TSR={h(){this.hydrated=!0,this.c()},e(){this.streamEnded=!0,this.c()},c(){this.hydrated&&this.streamEnded&&(delete self.$_TSR,delete self.$R.tsr)},p(e){this.initialized?e():this.buffer.push(e)},buffer:[]};$_TSR.router=($R=>$R[0]={manifest:$R[1]={routes:$R[2]={__root__:$R[3]={preloads:$R[4]=["/assets/index-DcWe6Y-3.js"],scripts:$R[5]=[$R[6]={attrs:$R[7]={type:"module",async:!0,src:"/assets/index-DcWe6Y-3.js"}}]},"/":$R[8]={preloads:$R[9]=["/assets/index-B5lbM2L2.js"]}}},matches:$R[10]=[$R[11]={i:"__root__",u:1790505082635,s:"success",ssr:!0},$R[12]={i:"",u:1790505082635,s:"success",ssr:!0}],lastMatchId:""})($R["tsr"]);$_TSR.e();document.currentScript.remove()</script><script type="module" async="" src="/assets/index-DcWe6Y-3.js"></script></body></html>
